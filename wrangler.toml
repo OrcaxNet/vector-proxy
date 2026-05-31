@@ -1,0 +1,16 @@
+name = "vector-proxy"
+main = "src/index.ts"
+compatibility_date = "2024-05-01"
+
+# Custom domain
+routes = [
+  { pattern = "vector.orcax.net", custom_domain = true }
+]
+
+# Vectorize binding
+[[vectorize]]
+binding = "VECTORIZE"
+index_name = "csbot-docs"
+
+# Environment variables (set via wrangler secret)
+# API_KEY = "your-api-key-for-auth"
