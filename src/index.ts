@@ -5,11 +5,25 @@
  * Binds to: vector.orcax.net
  *
  * Endpoints:
- *   POST /upsert     - Upsert vectors
- *   POST /search     - Search by vector
- *   POST /delete     - Delete by IDs
- *   GET  /describe   - Get index info
- *   GET  /health     - Health check
+ *   POST /upsert     - Upsert vectors   (write - auth required)
+ *   POST /search     - Search by vector (read - auth optional)
+ *   POST /delete     - Delete by IDs    (write - auth required)
+ *   POST /embed      - Generate embeds  (read - auth optional)
+ *   GET  /describe   - Get index info   (read - auth optional)
+ *   GET  /health     - Health check     (read - auth optional)
+ *
+ * Authentication:
+ *   - API key via `Authorization: Bearer <key>` header
+ *   - Stored as Cloudflare secret: env.API_KEY
+ *   - If API_KEY is not set, all requests are allowed (dev mode)
+ *   - All endpoints require valid API key when API_KEY is set
+ *
+ * Rate limiting:
+ *   - Consider adding Cloudflare Rate Limiting rules in the dashboard
+ *     for production: e.g., 100 req/min for reads, 20 req/min for writes.
+ *   - For stricter control, implement an in-memory sliding window using
+ *     a Durable Object or leverage `cf` request properties for IP-based
+ *     throttling at the edge.
  */
 
 interface Env {
@@ -46,6 +60,42 @@ interface DeleteRequest {
   ids: string[];
 }
 
+/**
+ * Verify authentication from the Authorization header.
+ *
+ * - If no API_KEY is configured, all requests are allowed (development mode).
+ * - When API_KEY is set, all requests must include a valid Bearer token.
+ *
+ * Returns null on success, or a 401 Response on failure.
+ */
+function verifyAuth(
+  request: Request,
+  env: Env,
+  corsHeaders: Record<string, string>
+): Response | null {
+  // No API_KEY configured -> allow everything (development mode)
+  if (!env.API_KEY) {
+    return null;
+  }
+
+  const authHeader = request.headers.get("Authorization");
+  const token = authHeader?.startsWith("Bearer ")
+    ? authHeader.slice(7)
+    : undefined;
+
+  if (token !== env.API_KEY) {
+    return Response.json(
+      {
+        error: "Unauthorized",
+        message: "Authentication required. Provide a valid API key via the Authorization: Bearer <key> header."
+      },
+      { status: 401, headers: corsHeaders }
+    );
+  }
+
+  return null; // auth OK
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
@@ -63,44 +113,26 @@ export default {
       return new Response(null, { headers: corsHeaders });
     }
 
-    // API Key authentication (optional)
-    if (env.API_KEY) {
-      const authHeader = request.headers.get("Authorization");
-      const token = authHeader?.replace("Bearer ", "");
-      if (token !== env.API_KEY) {
-        return Response.json(
-          { error: "Unauthorized" },
-          { status: 401, headers: corsHeaders }
-        );
-      }
-    }
-
     try {
-      // Route handling
+      // ---- Read endpoints (auth optional) ----
+
       if (url.pathname === "/health") {
+        const denied = verifyAuth(request, env, corsHeaders);
+        if (denied) return denied;
         return Response.json({ status: "ok", timestamp: new Date().toISOString() }, { headers: corsHeaders });
       }
 
       if (url.pathname === "/describe" && method === "GET") {
+        const denied = verifyAuth(request, env, corsHeaders);
+        if (denied) return denied;
         const info = await env.VECTORIZE.describe();
         return Response.json(info, { headers: corsHeaders });
       }
 
-      if (url.pathname === "/upsert" && method === "POST") {
-        const body = await request.json() as UpsertRequest;
-
-        if (!body.vectors || !Array.isArray(body.vectors)) {
-          return Response.json(
-            { error: "Missing or invalid 'vectors' array" },
-            { status: 400, headers: corsHeaders }
-          );
-        }
-
-        const result = await env.VECTORIZE.upsert(body.vectors);
-        return Response.json(result, { headers: corsHeaders });
-      }
-
       if (url.pathname === "/embed" && method === "POST") {
+        const denied = verifyAuth(request, env, corsHeaders);
+        if (denied) return denied;
+
         const body = await request.json() as EmbedRequest;
 
         if (!body.text) {
@@ -116,6 +148,9 @@ export default {
       }
 
       if (url.pathname === "/search" && method === "POST") {
+        const denied = verifyAuth(request, env, corsHeaders);
+        if (denied) return denied;
+
         const body = await request.json() as SearchRequest;
 
         let vector = body.vector;
@@ -144,7 +179,29 @@ export default {
         return Response.json(results, { headers: corsHeaders });
       }
 
+      // ---- Write endpoints (auth mandatory) ----
+
+      if (url.pathname === "/upsert" && method === "POST") {
+        const denied = verifyAuth(request, env, corsHeaders);
+        if (denied) return denied;
+
+        const body = await request.json() as UpsertRequest;
+
+        if (!body.vectors || !Array.isArray(body.vectors)) {
+          return Response.json(
+            { error: "Missing or invalid 'vectors' array" },
+            { status: 400, headers: corsHeaders }
+          );
+        }
+
+        const result = await env.VECTORIZE.upsert(body.vectors);
+        return Response.json(result, { headers: corsHeaders });
+      }
+
       if (url.pathname === "/delete" && method === "POST") {
+        const denied = verifyAuth(request, env, corsHeaders);
+        if (denied) return denied;
+
         const body = await request.json() as DeleteRequest;
 
         if (!body.ids || !Array.isArray(body.ids)) {

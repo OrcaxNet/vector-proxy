@@ -18,3 +18,6 @@ index_name = "csbot-docs"
 
 # Environment variables (set via wrangler secret)
 # API_KEY = "your-api-key-for-auth"
+#
+# Set API key:
+# npx wrangler secret put API_KEY
