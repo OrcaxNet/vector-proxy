@@ -13,6 +13,7 @@
  */
 
 interface Env {
+  AI: Ai;
   VECTORIZE: VectorizeIndex;
   API_KEY?: string;
 }
@@ -28,10 +29,17 @@ interface UpsertRequest {
 }
 
 interface SearchRequest {
-  vector: number[];
+  // Option 1: provide pre-computed vector
+  vector?: number[];
+  // Option 2: provide text (Worker will embed it)
+  text?: string;
   topK?: number;
   filter?: Record<string, unknown>;
   returnMetadata?: boolean;
+}
+
+interface EmbedRequest {
+  text: string | string[];
 }
 
 interface DeleteRequest {
@@ -92,12 +100,35 @@ export default {
         return Response.json(result, { headers: corsHeaders });
       }
 
+      if (url.pathname === "/embed" && method === "POST") {
+        const body = await request.json() as EmbedRequest;
+
+        if (!body.text) {
+          return Response.json(
+            { error: "Missing 'text' field" },
+            { status: 400, headers: corsHeaders }
+          );
+        }
+
+        const texts = Array.isArray(body.text) ? body.text : [body.text];
+        const result = await env.AI.run("@cf/qwen/qwen3-embedding-0.6b", { text: texts });
+        return Response.json(result, { headers: corsHeaders });
+      }
+
       if (url.pathname === "/search" && method === "POST") {
         const body = await request.json() as SearchRequest;
 
-        if (!body.vector || !Array.isArray(body.vector)) {
+        let vector = body.vector;
+
+        // If text is provided, embed it first
+        if (!vector && body.text) {
+          const embedResult = await env.AI.run("@cf/qwen/qwen3-embedding-0.6b", { text: [body.text] });
+          vector = embedResult.data[0];
+        }
+
+        if (!vector || !Array.isArray(vector)) {
           return Response.json(
-            { error: "Missing or invalid 'vector' array" },
+            { error: "Provide either 'vector' or 'text'" },
             { status: 400, headers: corsHeaders }
           );
         }
@@ -105,7 +136,7 @@ export default {
         const topK = body.topK || 10;
         const returnMetadata = body.returnMetadata !== false;
 
-        const results = await env.VECTORIZE.query(body.vector, {
+        const results = await env.VECTORIZE.query(vector, {
           topK,
           returnMetadata: returnMetadata ? "all" : "none",
         });
